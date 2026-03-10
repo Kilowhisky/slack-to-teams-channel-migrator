@@ -22,11 +22,13 @@ A CLI tool that migrates message history from a Slack channel to a Microsoft Tea
   - `channels:history` (public channels)
   - `groups:history` (private channels)
   - `users:read` (resolve user display names)
+  - `users:read.email` (read user emails for auto-mapping)
   - `files:read` (download file attachments)
 - **Azure AD App Registration** with application permissions:
   - `Teamwork.Migrate.All` (import messages with custom timestamps/authors)
   - `Files.ReadWrite.All` (upload file attachments to SharePoint)
-  - Admin consent granted for both permissions
+  - `User.Read.All` (look up Azure AD users by email, needed for `generate-user-map`)
+  - Admin consent granted for all permissions
 
 ## Installation
 
@@ -73,6 +75,7 @@ slack-to-teams
    - `channels:history`
    - `groups:history`
    - `users:read`
+   - `users:read.email`
    - `files:read`
 3. Install the app to your workspace
 4. Copy the **Bot User OAuth Token** (starts with `xoxb-`)
@@ -85,6 +88,7 @@ slack-to-teams
 2. Under **API permissions**, add:
    - Microsoft Graph > Application permissions > `Teamwork.Migrate.All`
    - Microsoft Graph > Application permissions > `Files.ReadWrite.All`
+   - Microsoft Graph > Application permissions > `User.Read.All`
 3. Click **Grant admin consent** for your organization
 4. Under **Certificates & secrets**, create a new client secret
 5. Note down: **Application (client) ID**, **Directory (tenant) ID**, and the **client secret value**
@@ -92,9 +96,32 @@ slack-to-teams
    - Team ID: In Teams, click the three dots on the team > **Get link to team** > extract the `groupId` parameter
    - Channel ID: Click the three dots on the channel > **Get link to channel** > extract the channel ID (format: `19:...@thread.tacv2`)
 
-### User Mapping (Optional)
+### User Mapping (Recommended)
 
-To attribute messages to the correct Teams users, create a JSON file mapping Slack user IDs to Azure AD user IDs:
+To attribute messages to the correct Teams users, you need a JSON file mapping Slack user IDs to Azure AD user IDs. The easiest way to create this is with the built-in generator:
+
+```bash
+slack-to-teams generate-user-map \
+  --slack-token xoxb-your-token \
+  --teams-tenant-id your-tenant-guid \
+  --teams-client-id your-client-guid \
+  --teams-client-secret your-secret \
+  -o user-map.json
+```
+
+This automatically matches Slack users to Azure AD accounts by email address. It will:
+- Fetch all users from your Slack workspace
+- Look up each user's email in Azure AD
+- Output the matched pairs and list any unmatched users
+- Write the mapping to `user-map.json`
+
+Then pass it to the migration:
+
+```bash
+slack-to-teams --user-map-file user-map.json ...
+```
+
+You can also create the mapping file manually if needed:
 
 ```json
 {
@@ -103,12 +130,16 @@ To attribute messages to the correct Teams users, create a JSON file mapping Sla
 }
 ```
 
-Pass it with `--user-map-file user-map.json`. Without this file, messages will show the correct display name but won't be linked to Teams user accounts.
+Without a user map, messages will show the correct display name but won't be linked to Teams user accounts.
 
 ## CLI Reference
 
+### `slack-to-teams migrate` (default)
+
+Run the channel migration.
+
 ```
-slack-to-teams [options]
+slack-to-teams [migrate] [options]
 
 Required:
   --slack-token <token>          Slack Bot token (xoxb-...) [env: SLACK_TOKEN]
@@ -126,8 +157,73 @@ Optional:
   --user-map-file <path>         Slack-to-Teams user ID mapping JSON file
   --dry-run                      Fetch and transform without posting to Teams
   --verbose                      Enable debug logging
-  --version                      Display version
-  --help                         Display help
+```
+
+### `slack-to-teams validate`
+
+Preflight check: test credentials and verify channel access before starting a migration.
+
+```bash
+slack-to-teams validate \
+  --slack-token xoxb-your-token \
+  --slack-channel C01ABCDEF \
+  --teams-team-id your-team-guid \
+  --teams-channel-id "19:abc@thread.tacv2" \
+  --teams-tenant-id your-tenant-guid \
+  --teams-client-id your-client-guid \
+  --teams-client-secret your-secret
+```
+
+Checks Slack token validity, channel access, Teams credentials, team/channel access, and whether the channel is already in migration mode.
+
+### `slack-to-teams list-channels`
+
+Discover Slack and Teams channel IDs. Provide Slack credentials, Teams credentials, or both.
+
+```bash
+# List both Slack and Teams channels
+slack-to-teams list-channels \
+  --slack-token xoxb-your-token \
+  --teams-tenant-id your-tenant-guid \
+  --teams-client-id your-client-guid \
+  --teams-client-secret your-secret
+
+# Filter by name
+slack-to-teams list-channels --slack-token xoxb-your-token --search engineering
+```
+
+### `slack-to-teams unlock-channel`
+
+Force-unlock a Teams channel stuck in migration mode (e.g., after a crash).
+
+```bash
+slack-to-teams unlock-channel \
+  --teams-team-id your-team-guid \
+  --teams-channel-id "19:abc@thread.tacv2" \
+  --teams-tenant-id your-tenant-guid \
+  --teams-client-id your-client-guid \
+  --teams-client-secret your-secret \
+  --state-file ./migration-state.json  # optional: also update state file
+```
+
+### `slack-to-teams status`
+
+Show migration progress from the state file. No API credentials needed.
+
+```bash
+slack-to-teams status
+slack-to-teams status --state-file ./my-migration-state.json
+```
+
+### `slack-to-teams generate-user-map`
+
+See [User Mapping](#user-mapping-recommended) above.
+
+### Global options
+
+```
+  --version    Display version
+  --help       Display help
 ```
 
 ## How It Works
@@ -184,7 +280,18 @@ slack-to-teams --oldest 1704067200 ...
 - The channel ID should look like `19:abc123@thread.tacv2`
 
 ### Channel stuck in migration mode
-If the process crashes and the channel remains locked, re-run the migration tool. It will detect the active migration and continue. Alternatively, you can call the `completeMigration` API manually.
+If the process crashes and the channel remains locked, you can force-unlock it:
+
+```bash
+slack-to-teams unlock-channel \
+  --teams-team-id your-team-guid \
+  --teams-channel-id "19:abc@thread.tacv2" \
+  --teams-tenant-id your-tenant-guid \
+  --teams-client-id your-client-guid \
+  --teams-client-secret your-secret
+```
+
+Alternatively, re-run the migration tool — it will detect the active migration and continue.
 
 ### Rate limiting
 The tool automatically handles rate limits with exponential backoff. Slack allows ~50 requests/minute, Teams allows 5 messages/second per channel. Large channels will take time.
