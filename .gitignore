@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.js.map
+*.d.ts
+!src/**/*.d.ts
+.env
+migration-state.json
+.DS_Store
+*.log
+tmp/

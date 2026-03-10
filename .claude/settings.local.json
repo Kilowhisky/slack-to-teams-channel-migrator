@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:github.com)",
+      "WebSearch",
+      "WebFetch(domain:docs.slack.dev)",
+      "Bash(npm install)"
+    ]
+  }
+}
