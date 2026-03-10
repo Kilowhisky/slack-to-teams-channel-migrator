@@ -48,10 +48,9 @@ vi.mock("../../src/utils/logger", () => ({
 }));
 
 vi.mock("../../src/utils/progress", () => ({
-  Progress: vi.fn().mockImplementation(() => ({
-    increment: vi.fn(),
-    done: vi.fn(),
-  })),
+  Progress: vi.fn().mockImplementation(function () {
+    return { increment: vi.fn(), done: vi.fn() };
+  }),
 }));
 
 // Prevent MaxListenersExceeded warnings from SIGINT/SIGTERM handlers
@@ -178,23 +177,25 @@ describe("runMigration - integration", () => {
       usersInfo: overrides?.usersInfo ?? defaultUsersInfo,
     });
 
-    // Wire up mock constructors
+    // Wire up mock constructors (regular functions required for `new` compatibility)
     vi.mocked(SlackClient).mockImplementation(
-      () =>
-        ({
+      function () {
+        return {
           web: mockSlackWeb,
           limiter: noopLimiter,
           testAuth: vi.fn().mockResolvedValue("Test Workspace"),
-        }) as unknown as SlackClient
+        } as unknown as SlackClient;
+      }
     );
 
     vi.mocked(TeamsClient).mockImplementation(
-      () =>
-        ({
+      function () {
+        return {
           graph: mockGraph,
           limiter: noopLimiter,
           testConnection: vi.fn().mockResolvedValue(undefined),
-        }) as unknown as TeamsClient
+        } as unknown as TeamsClient;
+      }
     );
 
     // Mock file download — write a temp file and return its path
