@@ -35,6 +35,7 @@ export interface MigratorOptions {
   stateFile: string;
   userMapFile?: string;
   dryRun: boolean;
+  concurrency?: number;
 }
 
 function parseTimestamp(value: string | undefined): string | undefined {
@@ -129,10 +130,12 @@ export async function runMigration(options: MigratorOptions): Promise<void> {
   logger.info("=== Phase 1: Initializing ===");
 
   const slackClient = new SlackClient({ token: options.slackToken });
+  const concurrency = Math.min(Math.max(options.concurrency ?? 1, 1), 5);
   const teamsClient = new TeamsClient({
     tenantId: options.teamsTenantId,
     clientId: options.teamsClientId,
     clientSecret: options.teamsClientSecret,
+    concurrency,
   });
 
   // Test connections
@@ -312,6 +315,14 @@ export async function runMigration(options: MigratorOptions): Promise<void> {
       );
       const replyProgress = new Progress("Posting replies", totalRepliesCount);
 
+      // Flatten all reply work items into a queue
+      interface ReplyWorkItem {
+        parentTs: string;
+        parentTeamsId: string;
+        reply: NormalizedSlackMessage;
+      }
+
+      const replyQueue: ReplyWorkItem[] = [];
       for (const [parentTs, replies] of threadParents) {
         const parentTeamsId = stateManager.getTeamsMessageId(parentTs);
         if (!parentTeamsId) {
@@ -323,6 +334,17 @@ export async function runMigration(options: MigratorOptions): Promise<void> {
         }
 
         for (const reply of replies) {
+          replyQueue.push({ parentTs, parentTeamsId, reply });
+        }
+      }
+
+      // Process replies using a worker pool
+      let queueIndex = 0;
+      const processReply = async () => {
+        while (queueIndex < replyQueue.length) {
+          const idx = queueIndex++;
+          const { parentTs, parentTeamsId, reply } = replyQueue[idx];
+
           if (stateManager.isReplyMigrated(parentTs, reply.ts)) {
             stateManager.recordSkippedReply();
             replyProgress.increment();
@@ -362,7 +384,13 @@ export async function runMigration(options: MigratorOptions): Promise<void> {
 
           replyProgress.increment();
         }
-      }
+      };
+
+      const workers = Array.from(
+        { length: Math.min(concurrency, replyQueue.length) },
+        () => processReply()
+      );
+      await Promise.all(workers);
       replyProgress.done();
     }
 

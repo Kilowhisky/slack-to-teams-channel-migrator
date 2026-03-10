@@ -3,6 +3,31 @@ import type { MigrationState } from "../state/types";
 
 export interface StatusOptions {
   stateFile: string;
+  json?: boolean;
+}
+
+interface StatusOutput {
+  status: string;
+  source: { slackChannel: string };
+  target: { teamsTeamId: string; teamsChannelId: string };
+  progress: {
+    messages: number;
+    messagesTotal: number;
+    replies: number;
+    repliesTotal: number;
+    filesUploaded: number;
+    failed: number;
+  };
+  migrationMode: { active: boolean };
+  timestamps: { started: string; lastUpdated: string };
+  dateRange?: { oldest?: string; latest?: string };
+  errors: Array<{ slackTs: string; error: string; retryable: boolean }>;
+  stateFile: {
+    path: string;
+    messageRecords: number;
+    replyRecords: number;
+    fileRecords: number;
+  };
 }
 
 function pct(num: number, total: number): string {
@@ -16,6 +41,114 @@ function formatDate(iso: string): string {
   } catch {
     return iso;
   }
+}
+
+function buildOutput(state: MigrationState, stateFilePath: string): StatusOutput {
+  const s = state.stats;
+
+  const output: StatusOutput = {
+    status: state.status,
+    source: { slackChannel: state.config.slackChannel },
+    target: {
+      teamsTeamId: state.config.teamsTeamId,
+      teamsChannelId: state.config.teamsChannelId,
+    },
+    progress: {
+      messages: s.migratedMessages + s.skippedMessages,
+      messagesTotal: s.totalSlackMessages,
+      replies: s.migratedReplies + s.skippedReplies,
+      repliesTotal: s.totalSlackReplies,
+      filesUploaded: s.filesUploaded,
+      failed: s.failedMessages,
+    },
+    migrationMode: { active: state.migrationModeActive },
+    timestamps: {
+      started: s.startedAt,
+      lastUpdated: s.lastUpdatedAt,
+    },
+    errors: state.errors.map((e) => ({
+      slackTs: e.slackTs,
+      error: e.error,
+      retryable: e.retryable,
+    })),
+    stateFile: {
+      path: stateFilePath,
+      messageRecords: Object.keys(state.messages).length,
+      replyRecords: Object.keys(state.replies).length,
+      fileRecords: Object.keys(state.files).length,
+    },
+  };
+
+  if (state.config.oldest || state.config.latest) {
+    output.dateRange = {};
+    if (state.config.oldest) output.dateRange.oldest = state.config.oldest;
+    if (state.config.latest) output.dateRange.latest = state.config.latest;
+  }
+
+  return output;
+}
+
+function renderText(output: StatusOutput): void {
+  const statusLabel =
+    output.status === "completed"
+      ? "\u2713 completed"
+      : output.status === "failed"
+        ? "\u2717 failed"
+        : "... in progress";
+
+  console.log(`\nMigration Status: ${statusLabel}`);
+  console.log(`Source: Slack channel ${output.source.slackChannel}`);
+  console.log(
+    `Target: Teams ${output.target.teamsTeamId} / ${output.target.teamsChannelId}`
+  );
+
+  console.log(`\nProgress:`);
+  console.log(
+    `  Messages:  ${output.progress.messages} / ${output.progress.messagesTotal}  (${pct(output.progress.messages, output.progress.messagesTotal)})`
+  );
+  console.log(
+    `  Replies:   ${output.progress.replies} / ${output.progress.repliesTotal}  (${pct(output.progress.replies, output.progress.repliesTotal)})`
+  );
+  console.log(`  Files:     ${output.progress.filesUploaded} uploaded`);
+  console.log(`  Failed:    ${output.progress.failed}`);
+
+  if (output.migrationMode.active) {
+    console.log(`\nMigration mode: ACTIVE (channel is locked)`);
+    console.log(`  Use "slack-to-teams unlock-channel" to force-unlock if needed.`);
+  } else {
+    console.log(`\nMigration mode: inactive`);
+  }
+
+  console.log(`\nStarted:     ${formatDate(output.timestamps.started)}`);
+  console.log(`Last update: ${formatDate(output.timestamps.lastUpdated)}`);
+
+  if (output.dateRange) {
+    console.log(`\nDate range:`);
+    if (output.dateRange.oldest) console.log(`  Oldest: ${output.dateRange.oldest}`);
+    if (output.dateRange.latest) console.log(`  Latest: ${output.dateRange.latest}`);
+  }
+
+  if (output.errors.length > 0) {
+    console.log(`\nErrors (${output.errors.length}):`);
+    const shown = output.errors.slice(0, 20);
+    for (const err of shown) {
+      const retryable = err.retryable ? "retryable" : "permanent";
+      console.log(`  ${err.slackTs}: ${err.error} (${retryable})`);
+    }
+    if (output.errors.length > 20) {
+      console.log(`  ... and ${output.errors.length - 20} more`);
+    }
+
+    const retryableCount = output.errors.filter((e) => e.retryable).length;
+    if (retryableCount > 0) {
+      console.log(`\n  ${retryableCount} retryable errors. Re-run migration to retry.`);
+    }
+  }
+
+  console.log(`\nState file: ${output.stateFile.path}`);
+  console.log(
+    `  ${output.stateFile.messageRecords} message records, ${output.stateFile.replyRecords} reply records, ${output.stateFile.fileRecords} file records`
+  );
 }
 
 export async function showStatus(options: StatusOptions): Promise<void> {
@@ -41,79 +174,11 @@ export async function showStatus(options: StatusOptions): Promise<void> {
     return;
   }
 
-  const s = state.stats;
-  const migratedTotal = s.migratedMessages + s.skippedMessages;
-  const repliesTotal = s.migratedReplies + s.skippedReplies;
+  const output = buildOutput(state, options.stateFile);
 
-  // Status header
-  const statusLabel =
-    state.status === "completed"
-      ? "\u2713 completed"
-      : state.status === "failed"
-        ? "\u2717 failed"
-        : "... in progress";
-
-  console.log(`\nMigration Status: ${statusLabel}`);
-  console.log(
-    `Source: Slack channel ${state.config.slackChannel}`
-  );
-  console.log(
-    `Target: Teams ${state.config.teamsTeamId} / ${state.config.teamsChannelId}`
-  );
-
-  // Progress
-  console.log(`\nProgress:`);
-  console.log(
-    `  Messages:  ${migratedTotal} / ${s.totalSlackMessages}  (${pct(migratedTotal, s.totalSlackMessages)})`
-  );
-  console.log(
-    `  Replies:   ${repliesTotal} / ${s.totalSlackReplies}  (${pct(repliesTotal, s.totalSlackReplies)})`
-  );
-  console.log(`  Files:     ${s.filesUploaded} uploaded`);
-  console.log(`  Failed:    ${s.failedMessages}`);
-
-  // Migration mode
-  if (state.migrationModeActive) {
-    console.log(`\nMigration mode: ACTIVE (channel is locked)`);
-    console.log(`  Use "slack-to-teams unlock-channel" to force-unlock if needed.`);
+  if (options.json) {
+    console.log(JSON.stringify(output, null, 2));
   } else {
-    console.log(`\nMigration mode: inactive`);
+    renderText(output);
   }
-
-  // Timestamps
-  console.log(`\nStarted:     ${formatDate(s.startedAt)}`);
-  console.log(`Last update: ${formatDate(s.lastUpdatedAt)}`);
-
-  // Date range
-  if (state.config.oldest || state.config.latest) {
-    console.log(`\nDate range:`);
-    if (state.config.oldest) console.log(`  Oldest: ${state.config.oldest}`);
-    if (state.config.latest) console.log(`  Latest: ${state.config.latest}`);
-  }
-
-  // Errors
-  if (state.errors.length > 0) {
-    console.log(`\nErrors (${state.errors.length}):`);
-    const shown = state.errors.slice(0, 20);
-    for (const err of shown) {
-      const retryable = err.retryable ? "retryable" : "permanent";
-      console.log(`  ${err.slackTs}: ${err.error} (${retryable})`);
-    }
-    if (state.errors.length > 20) {
-      console.log(`  ... and ${state.errors.length - 20} more`);
-    }
-
-    const retryableCount = state.errors.filter((e) => e.retryable).length;
-    if (retryableCount > 0) {
-      console.log(`\n  ${retryableCount} retryable errors. Re-run migration to retry.`);
-    }
-  }
-
-  // File stats
-  const fileCount = Object.keys(state.files).length;
-  const messageCount = Object.keys(state.messages).length;
-  const replyCount = Object.keys(state.replies).length;
-
-  console.log(`\nState file: ${options.stateFile}`);
-  console.log(`  ${messageCount} message records, ${replyCount} reply records, ${fileCount} file records`);
 }

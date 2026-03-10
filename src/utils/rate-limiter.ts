@@ -10,12 +10,12 @@ export function createSlackLimiter(): Bottleneck {
   });
 }
 
-export function createTeamsLimiter(): Bottleneck {
+export function createTeamsLimiter(maxConcurrent = 1): Bottleneck {
   return new Bottleneck({
     reservoir: 5,
     reservoirRefreshAmount: 5,
     reservoirRefreshInterval: 1000,
-    maxConcurrent: 1,
+    maxConcurrent: Math.min(Math.max(maxConcurrent, 1), 5),
     minTime: 200,
   });
 }

@@ -8,6 +8,7 @@ export interface TeamsClientOptions {
   tenantId: string;
   clientId: string;
   clientSecret: string;
+  concurrency?: number;
 }
 
 export class TeamsClient {
@@ -29,7 +30,7 @@ export class TeamsClient {
       authProvider,
     });
 
-    this.limiter = createTeamsLimiter();
+    this.limiter = createTeamsLimiter(options.concurrency);
   }
 
   async testConnection(): Promise<void> {

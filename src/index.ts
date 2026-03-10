@@ -74,6 +74,7 @@ program
     "Path to JSON file mapping Slack user IDs to Azure AD user IDs"
   )
   .option("--dry-run", "Fetch and transform messages without posting to Teams", false)
+  .option("--concurrency <n>", "Number of concurrent Teams API requests for replies (1-5)", "1")
   .option("--verbose", "Enable debug logging", false)
   .action(async (opts) => {
     if (opts.verbose) {
@@ -94,6 +95,7 @@ program
         stateFile: opts.stateFile,
         userMapFile: opts.userMapFile,
         dryRun: opts.dryRun,
+        concurrency: parseInt(opts.concurrency, 10),
       });
     } catch (err) {
       console.error(
@@ -242,6 +244,7 @@ program
     process.env.TEAMS_CLIENT_SECRET
   )
   .option("-s, --search <pattern>", "Filter channels by name")
+  .option("--json", "Output as JSON", false)
   .option("--verbose", "Enable debug logging", false)
   .action(async (opts) => {
     if (opts.verbose) setLogLevel("debug");
@@ -252,6 +255,7 @@ program
         teamsClientId: opts.teamsClientId,
         teamsClientSecret: opts.teamsClientSecret,
         search: opts.search,
+        json: opts.json,
       });
     } catch (err) {
       console.error("\nFailed:", err instanceof Error ? err.message : err);
@@ -316,9 +320,10 @@ program
     "Path to migration state file",
     "./migration-state.json"
   )
+  .option("--json", "Output as JSON", false)
   .action(async (opts) => {
     try {
-      await showStatus({ stateFile: opts.stateFile });
+      await showStatus({ stateFile: opts.stateFile, json: opts.json });
     } catch (err) {
       console.error("\nFailed:", err instanceof Error ? err.message : err);
       process.exit(1);
