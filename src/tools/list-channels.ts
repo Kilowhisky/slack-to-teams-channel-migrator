@@ -8,6 +8,7 @@ export interface ListChannelsOptions {
   teamsClientId?: string;
   teamsClientSecret?: string;
   search?: string;
+  json?: boolean;
 }
 
 interface SlackChannelInfo {
@@ -26,6 +27,11 @@ interface TeamsChannelInfo {
   membershipType: string;
 }
 
+interface ListChannelsOutput {
+  slack?: { channels: SlackChannelInfo[] };
+  teams?: { channels: TeamsChannelInfo[] };
+}
+
 export async function listChannels(options: ListChannelsOptions): Promise<void> {
   const hasSlack = !!options.slackToken;
   const hasTeams = !!(options.teamsTenantId && options.teamsClientId && options.teamsClientSecret);
@@ -38,21 +44,35 @@ export async function listChannels(options: ListChannelsOptions): Promise<void> 
     return;
   }
 
+  const output: ListChannelsOutput = {};
+
   if (hasSlack) {
-    await listSlackChannels(options.slackToken!, options.search);
+    const channels = await fetchSlackChannels(options.slackToken!, options.search);
+    if (channels) output.slack = { channels };
   }
 
   if (hasTeams) {
-    await listTeamsChannels(
+    const channels = await fetchTeamsChannels(
       options.teamsTenantId!,
       options.teamsClientId!,
       options.teamsClientSecret!,
       options.search
     );
+    if (channels) output.teams = { channels };
+  }
+
+  if (options.json) {
+    console.log(JSON.stringify(output, null, 2));
+  } else {
+    if (output.slack) renderSlackText(output.slack.channels);
+    if (output.teams) renderTeamsText(output.teams.channels);
   }
 }
 
-async function listSlackChannels(token: string, search?: string): Promise<void> {
+async function fetchSlackChannels(
+  token: string,
+  search?: string
+): Promise<SlackChannelInfo[] | null> {
   const client = new SlackClient({ token });
   const channels: SlackChannelInfo[] = [];
   let cursor: string | undefined;
@@ -73,7 +93,7 @@ async function listSlackChannels(token: string, search?: string): Promise<void> 
           channels.push({
             id: ch.id as string,
             name: ch.name as string,
-            isPrivate: !!(ch.is_private),
+            isPrivate: !!ch.is_private,
             numMembers: (ch.num_members as number) || 0,
             topic: ((ch.topic as Record<string, unknown>)?.value as string) || "",
           });
@@ -81,15 +101,15 @@ async function listSlackChannels(token: string, search?: string): Promise<void> 
       }
 
       cursor =
-        (result.response_metadata as Record<string, string> | undefined)?.next_cursor || undefined;
+        (result.response_metadata as Record<string, string> | undefined)?.next_cursor ||
+        undefined;
     } while (cursor);
   } catch (err) {
     console.error(`Failed to list Slack channels: ${err instanceof Error ? err.message : err}`);
     process.exitCode = 1;
-    return;
+    return null;
   }
 
-  // Filter by search
   let filtered = channels;
   if (search) {
     const pattern = search.toLowerCase();
@@ -100,39 +120,20 @@ async function listSlackChannels(token: string, search?: string): Promise<void> 
     );
   }
 
-  // Sort by name
   filtered.sort((a, b) => a.name.localeCompare(b.name));
-
-  console.log(`\n=== Slack Channels (${filtered.length}) ===`);
-  if (filtered.length === 0) {
-    console.log("  No channels found.");
-    return;
-  }
-
-  // Calculate column widths
-  const maxName = Math.max(...filtered.map((ch) => ch.name.length + 1), 10);
-  const maxId = Math.max(...filtered.map((ch) => ch.id.length), 10);
-
-  for (const ch of filtered) {
-    const name = `#${ch.name}`.padEnd(maxName + 1);
-    const id = ch.id.padEnd(maxId);
-    const type = ch.isPrivate ? "private" : "public";
-    const members = `${ch.numMembers} members`;
-    console.log(`  ${name}  ${id}  (${type}, ${members})`);
-  }
+  return filtered;
 }
 
-async function listTeamsChannels(
+async function fetchTeamsChannels(
   tenantId: string,
   clientId: string,
   clientSecret: string,
   search?: string
-): Promise<void> {
+): Promise<TeamsChannelInfo[] | null> {
   const client = new TeamsClient({ tenantId, clientId, clientSecret });
   const allChannels: TeamsChannelInfo[] = [];
 
   try {
-    // List teams using application permissions
     const teamsResult = await client.graph
       .api("/groups")
       .filter("resourceProvisioningOptions/Any(x:x eq 'Team')")
@@ -170,10 +171,9 @@ async function listTeamsChannels(
   } catch (err) {
     console.error(`Failed to list Teams: ${err instanceof Error ? err.message : err}`);
     process.exitCode = 1;
-    return;
+    return null;
   }
 
-  // Filter by search
   let filtered = allChannels;
   if (search) {
     const pattern = search.toLowerCase();
@@ -184,31 +184,53 @@ async function listTeamsChannels(
     );
   }
 
-  // Sort by team name, then channel name
   filtered.sort((a, b) => {
     const teamCmp = a.teamName.localeCompare(b.teamName);
     return teamCmp !== 0 ? teamCmp : a.channelName.localeCompare(b.channelName);
   });
 
-  console.log(`\n=== Teams Channels (${filtered.length}) ===`);
-  if (filtered.length === 0) {
+  return filtered;
+}
+
+function renderSlackText(channels: SlackChannelInfo[]): void {
+  console.log(`\n=== Slack Channels (${channels.length}) ===`);
+  if (channels.length === 0) {
     console.log("  No channels found.");
     return;
   }
 
-  // Calculate column widths
+  const maxName = Math.max(...channels.map((ch) => ch.name.length + 1), 10);
+  const maxId = Math.max(...channels.map((ch) => ch.id.length), 10);
+
+  for (const ch of channels) {
+    const name = `#${ch.name}`.padEnd(maxName + 1);
+    const id = ch.id.padEnd(maxId);
+    const type = ch.isPrivate ? "private" : "public";
+    const members = `${ch.numMembers} members`;
+    console.log(`  ${name}  ${id}  (${type}, ${members})`);
+  }
+}
+
+function renderTeamsText(channels: TeamsChannelInfo[]): void {
+  console.log(`\n=== Teams Channels (${channels.length}) ===`);
+  if (channels.length === 0) {
+    console.log("  No channels found.");
+    return;
+  }
+
   const maxLabel = Math.max(
-    ...filtered.map((ch) => `${ch.teamName} / ${ch.channelName}`.length),
+    ...channels.map((ch) => `${ch.teamName} / ${ch.channelName}`.length),
     20
   );
 
-  for (const ch of filtered) {
+  for (const ch of channels) {
     const label = `${ch.teamName} / ${ch.channelName}`.padEnd(maxLabel);
     console.log(`  ${label}  ${ch.channelId}  (${ch.membershipType})`);
   }
 
-  // Also print team IDs for reference
-  const uniqueTeams = [...new Map(filtered.map((ch) => [ch.teamId, ch.teamName])).entries()];
+  const uniqueTeams = [
+    ...new Map(channels.map((ch) => [ch.teamId, ch.teamName])).entries(),
+  ];
   if (uniqueTeams.length > 0) {
     console.log(`\n  Team IDs:`);
     for (const [id, name] of uniqueTeams) {
